@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>4EST Trimble Launcher</title>
+</head>
+<body>
+  <h2>Opening Trimble Connect...</h2>
+  <p>Please wait.</p>
+
+  <script>
+    function getParam(name) {
+      const params = new URLSearchParams(window.location.search);
+      return params.get(name) || "";
+    }
+
+    const drawingNo = getParam("drawingNo");
+    const guid = getParam("guid");
+    const target = getParam("target");
+
+    const payload = {
+      drawingNo: drawingNo,
+      guid: guid,
+      timestamp: new Date().toISOString()
+    };
+
+    localStorage.setItem("4EST_TRIMBLE_LOCATOR_PAYLOAD", JSON.stringify(payload));
+
+    if (target) {
+      window.location.href = target;
+    } else {
+      document.body.innerHTML = "<h2>Target Trimble URL missing.</h2>";
+    }
+  </script>
+</body>
+</html>
