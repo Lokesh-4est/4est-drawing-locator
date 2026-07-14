@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>4EST Drawing Locator</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>4EST Drawing Locator</h1>
+
+    <section class="card">
+      <div class="label">Connection</div>
+      <div id="connectionStatus" class="value muted">Connecting to Trimble Connect...</div>
+    </section>
+
+    <section class="card">
+      <div class="label">drawingNo received</div>
+      <div id="drawingNoValue" class="value big">Checking...</div>
+      <div id="drawingNoSource" class="hint"></div>
+    </section>
+
+    <section class="card">
+      <div class="label">Project</div>
+      <pre id="projectInfo" class="log">Waiting...</pre>
+    </section>
+
+    <section class="card">
+      <div class="label">Debug</div>
+      <pre id="debugLog" class="log">Starting...</pre>
+    </section>
+
+    <section class="card">
+      <div class="label">Manual test</div>
+      <input id="manualDrawingNo" placeholder="Example: LGSF31" />
+      <button id="manualButton">Use manual drawingNo</button>
+    </section>
+
+    <section class="card">
+      <div class="label">Find &amp; zoom to part in model</div>
+      <input id="zoomTargetInput" placeholder="Leave blank to use drawingNo above" />
+      <button id="findZoomButton">Find &amp; Zoom</button>
+      <button id="inspectButton">Inspect current selection</button>
+      <div id="zoomStatus" class="hint">Searches loaded model objects for a property matching this value, then selects and zooms to it.</div>
+    </section>
+  </main>
+
+  <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
