@@ -71,7 +71,26 @@ function detectDrawingNo() {
       value: getParamFromUrl("https://dummy.local/?" + hash.replace(/^#/, ""), "drawingNo")
     });
   }
+try {
+  const stored = localStorage.getItem("4EST_TRIMBLE_LOCATOR_PAYLOAD");
+  if (stored) {
+    const payload = JSON.parse(stored);
 
+    candidates.push({
+      source: "GitHub launcher localStorage drawingNo",
+      value: payload.drawingNo || ""
+    });
+
+    candidates.push({
+      source: "GitHub launcher localStorage guid",
+      value: payload.guid || ""
+    });
+
+    log("Launcher payload found", payload);
+  }
+} catch (err) {
+  log("Could not read launcher localStorage payload", err.message);
+}
   const found = candidates.find(c => c.value && c.value.trim().length > 0);
 
   log("drawingNo probe candidates", candidates);
