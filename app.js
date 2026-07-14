@@ -71,26 +71,7 @@ function detectDrawingNo() {
       value: getParamFromUrl("https://dummy.local/?" + hash.replace(/^#/, ""), "drawingNo")
     });
   }
-try {
-  const stored = localStorage.getItem("4EST_TRIMBLE_LOCATOR_PAYLOAD");
-  if (stored) {
-    const payload = JSON.parse(stored);
 
-    candidates.push({
-      source: "GitHub launcher localStorage drawingNo",
-      value: payload.drawingNo || ""
-    });
-
-    candidates.push({
-      source: "GitHub launcher localStorage guid",
-      value: payload.guid || ""
-    });
-
-    log("Launcher payload found", payload);
-  }
-} catch (err) {
-  log("Could not read launcher localStorage payload", err.message);
-}
   const found = candidates.find(c => c.value && c.value.trim().length > 0);
 
   log("drawingNo probe candidates", candidates);
@@ -162,22 +143,57 @@ function normalizeValue(v) {
 
 // Pulls the full list of objectRuntimeIds for every loaded model.
 async function getAllModelObjectIds() {
+  // Calling getObjects() with no selector returns every object across all
+  // currently loaded models, grouped by model. This avoids relying on a
+  // modelId value from getModels() that may not line up with what the
+  // viewer expects internally.
+  let objs;
+  try {
+    objs = await API.viewer.getObjects();
+  } catch (err) {
+    log("getObjects() with no selector failed, trying per-model fallback", err.message);
+    objs = null;
+  }
+
+  const result = [];
+
+  if (objs && objs.length && objs.some(o => (o.objectRuntimeIds || []).length)) {
+    for (const o of objs) {
+      result.push({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] });
+    }
+    log("Objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+    return result;
+  }
+
+  // Fallback: try per-model, both with and without recursive, in case the
+  // unfiltered call returned nothing on this project.
   const models = await API.viewer.getModels();
   log("Loaded models", models.map(m => ({ id: m.id, name: m.name })));
 
-  const result = [];
   for (const m of models) {
-    try {
-      const objs = await API.viewer.getObjects({
-        modelObjectIds: [{ modelId: m.id, recursive: true }]
-      });
-      for (const o of objs) {
-        result.push({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] });
+    let found = [];
+    for (const recursive of [true, false]) {
+      try {
+        const modelObjs = await API.viewer.getObjects({
+          modelObjectIds: [{ modelId: m.id, recursive }]
+        });
+        const ids = modelObjs.flatMap(o => o.objectRuntimeIds || []);
+        if (ids.length) {
+          found = ids;
+          log(`Got ${ids.length} object(s) for model ${m.id} (recursive=${recursive})`);
+          break;
+        }
+      } catch (err) {
+        log(`getObjects failed for model ${m.id} (recursive=${recursive})`, err.message);
       }
-    } catch (err) {
-      log(`Could not read objects for model ${m.id} (${m.name})`, err.message);
+    }
+    if (found.length) {
+      result.push({ modelId: m.id, objectRuntimeIds: found });
+    } else {
+      log(`No objects found for model ${m.id} (${m.name}) via any method.`);
     }
   }
+
   return result;
 }
 
