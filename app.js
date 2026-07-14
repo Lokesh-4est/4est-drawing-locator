@@ -142,59 +142,63 @@ function normalizeValue(v) {
 }
 
 // Pulls the full list of objectRuntimeIds for every loaded model.
+// Tries three strategies in order, since getObjects() with no ids specified
+// does not reliably return "everything" on all projects:
+//   1) getObjects() with no selector
+//   2) getHierarchyChildren() walked from the model root
+//   3) fall back to whatever is currently selected in the viewer
+//      (the user can press Ctrl+A / "Select all" in the 3D Viewer first)
 async function getAllModelObjectIds() {
-  // Calling getObjects() with no selector returns every object across all
-  // currently loaded models, grouped by model. This avoids relying on a
-  // modelId value from getModels() that may not line up with what the
-  // viewer expects internally.
-  let objs;
+  // Strategy 1: unfiltered getObjects()
   try {
-    objs = await API.viewer.getObjects();
-  } catch (err) {
-    log("getObjects() with no selector failed, trying per-model fallback", err.message);
-    objs = null;
-  }
-
-  const result = [];
-
-  if (objs && objs.length && objs.some(o => (o.objectRuntimeIds || []).length)) {
-    for (const o of objs) {
-      result.push({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] });
+    const objs = await API.viewer.getObjects();
+    if (objs && objs.length && objs.some(o => (o.objectRuntimeIds || []).length)) {
+      const result = objs.map(o => ({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] }));
+      log("Objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+      return result;
     }
-    log("Objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
-    return result;
+  } catch (err) {
+    log("getObjects() with no selector failed", err.message);
   }
 
-  // Fallback: try per-model, both with and without recursive, in case the
-  // unfiltered call returned nothing on this project.
   const models = await API.viewer.getModels();
   log("Loaded models", models.map(m => ({ id: m.id, name: m.name })));
 
+  // Strategy 2: walk the hierarchy from the model root.
+  const result = [];
   for (const m of models) {
-    let found = [];
-    for (const recursive of [true, false]) {
-      try {
-        const modelObjs = await API.viewer.getObjects({
-          modelObjectIds: [{ modelId: m.id, recursive }]
-        });
-        const ids = modelObjs.flatMap(o => o.objectRuntimeIds || []);
-        if (ids.length) {
-          found = ids;
-          log(`Got ${ids.length} object(s) for model ${m.id} (recursive=${recursive})`);
-          break;
-        }
-      } catch (err) {
-        log(`getObjects failed for model ${m.id} (recursive=${recursive})`, err.message);
+    try {
+      const rootChildren = await API.viewer.getHierarchyChildren(m.id, [], undefined, true);
+      const ids = (rootChildren || []).map(e => e.id).filter(id => id !== undefined && id !== null);
+      if (ids.length) {
+        result.push({ modelId: m.id, objectRuntimeIds: ids });
+        log(`Got ${ids.length} object(s) for model ${m.id} via getHierarchyChildren`);
+      } else {
+        log(`getHierarchyChildren returned no objects for model ${m.id}`);
       }
-    }
-    if (found.length) {
-      result.push({ modelId: m.id, objectRuntimeIds: found });
-    } else {
-      log(`No objects found for model ${m.id} (${m.name}) via any method.`);
+    } catch (err) {
+      log(`getHierarchyChildren failed for model ${m.id}`, err.message);
     }
   }
+  if (result.length) return result;
 
-  return result;
+  // Strategy 3: use whatever is currently selected in the viewer. This is
+  // the most reliable option when the two automatic methods above don't
+  // work on a given project - select everything you want searched in the
+  // 3D Viewer (Ctrl+A selects all visible objects), then click Find & Zoom.
+  try {
+    const selection = await API.viewer.getSelection();
+    if (selection && selection.length && selection.some(s => (s.objectRuntimeIds || []).length)) {
+      const fromSelection = selection.map(s => ({ modelId: s.modelId, objectRuntimeIds: s.objectRuntimeIds || [] }));
+      log("Falling back to current viewer selection as the search scope", fromSelection.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+      return fromSelection;
+    }
+  } catch (err) {
+    log("Reading current selection failed", err.message);
+  }
+
+  log("Could not automatically enumerate any objects. Select the objects you want searched in the 3D Viewer (Ctrl+A for all), then try Find & Zoom again.");
+  return [];
 }
 
 // Fetches object properties in batches and returns objectRuntimeIds whose
@@ -261,6 +265,11 @@ async function findAndZoomToDrawing() {
   } catch (err) {
     status.textContent = "Failed to read models from the viewer: " + err.message;
     log("getModels/getObjects failed", err.message);
+    return;
+  }
+
+  if (!modelObjectSets.length) {
+    status.textContent = "Could not automatically read any objects from the model. In the 3D Viewer, press Ctrl+A to select all objects (or select the area you want searched), then click Find & Zoom again.";
     return;
   }
 
