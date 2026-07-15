@@ -10,40 +10,50 @@
   <main class="wrap">
     <h1>4EST Drawing Locator</h1>
 
-    <section class="card">
-      <div class="label">Connection</div>
-      <div id="connectionStatus" class="value muted">Connecting to Trimble Connect...</div>
+    <div id="connectionBanner" class="banner muted">Connecting to Trimble Connect...</div>
+
+    <section class="card highlight">
+      <label class="field-label" for="zoomTargetInput">Find a part</label>
+      <div class="search-row">
+        <input id="zoomTargetInput" placeholder="Enter a mark, SKU, or position number" />
+        <button id="findZoomButton">
+          <span class="btn-label">Find &amp; Zoom</span>
+          <span class="btn-spinner" hidden></span>
+        </button>
+      </div>
+      <div id="zoomStatus" class="result"></div>
     </section>
 
-    <section class="card">
-      <div class="label">drawingNo received</div>
-      <div id="drawingNoValue" class="value big">Checking...</div>
-      <div id="drawingNoSource" class="hint"></div>
-    </section>
+    <details class="card advanced">
+      <summary>Advanced</summary>
 
-    <section class="card">
-      <div class="label">Project</div>
-      <pre id="projectInfo" class="log">Waiting...</pre>
-    </section>
+      <div class="adv-block">
+        <div class="label">drawingNo detected from link</div>
+        <div id="drawingNoValue" class="value">Checking...</div>
+        <div id="drawingNoSource" class="hint"></div>
+      </div>
 
-    <section class="card">
-      <div class="label">Debug</div>
-      <pre id="debugLog" class="log">Starting...</pre>
-    </section>
+      <div class="adv-block">
+        <label class="field-label" for="propertyNamesInput">Property name(s) to search (comma-separated)</label>
+        <input id="propertyNamesInput" value="PART Position, Assembly/Cast unit position" />
+        <div class="hint">These should match the field names your models actually use.</div>
+      </div>
 
-    <section class="card">
-      <div class="label">Manual test</div>
-      <input id="manualDrawingNo" placeholder="Example: LGSF31" />
-      <button id="manualButton">Use manual drawingNo</button>
-    </section>
+      <div class="adv-block">
+        <button id="inspectButton" class="secondary">What field is this part using?</button>
+        <div class="hint">Select a part in the model first, then click this to see its property names in the log below.</div>
+      </div>
 
-    <section class="card">
-      <div class="label">Find &amp; zoom to part in model</div>
-      <input id="zoomTargetInput" placeholder="Leave blank to use drawingNo above" />
-      <button id="findZoomButton">Find &amp; Zoom</button>
-      <button id="inspectButton">Inspect current selection</button>
-      <div id="zoomStatus" class="hint">Searches loaded model objects for a property matching this value, then selects and zooms to it.</div>
-    </section>
+      <div class="adv-block">
+        <div class="label">Project</div>
+        <pre id="projectInfo" class="log">Waiting...</pre>
+      </div>
+
+      <div class="adv-block">
+        <div class="label">Debug log</div>
+        <pre id="debugLog" class="log">Starting...</pre>
+      </div>
+    </details>
   </main>
 
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
