@@ -3,7 +3,8 @@ let API = null;
 const state = {
   drawingNo: "",
   drawingNoSource: "",
-  events: []
+  events: [],
+  selectionCount: 0
 };
 
 function el(id) {
@@ -87,14 +88,39 @@ function setDrawingNo(value, source) {
   state.drawingNo = value || "";
   state.drawingNoSource = source || "";
 
-  el("drawingNoValue").textContent = state.drawingNo || "NOT RECEIVED";
-  el("drawingNoSource").textContent = "Source: " + state.drawingNoSource;
+  const valEl = el("drawingNoValue");
+  const srcEl = el("drawingNoSource");
+  if (valEl) valEl.textContent = state.drawingNo || "NOT RECEIVED";
+  if (srcEl) srcEl.textContent = "Source: " + state.drawingNoSource;
+
+  // Silently pre-fill the main search box if a value was detected and the
+  // user hasn't already typed something in themselves.
+  const searchInput = el("zoomTargetInput");
+  if (searchInput && state.drawingNo && !searchInput.value.trim()) {
+    searchInput.value = state.drawingNo;
+  }
+}
+
+function updateSelectionCount(selection) {
+  const el_ = el("selectionCount");
+  if (!el_) return;
+
+  const total = (selection || []).reduce((sum, s) => sum + (s.objectRuntimeIds || []).length, 0);
+  state.selectionCount = total;
+
+  if (total > 0) {
+    el_.textContent = `${total} object(s) currently selected \u2014 ready to search`;
+    el_.classList.add("ready");
+  } else {
+    el_.textContent = "No selection detected yet \u2014 click the model, then press Ctrl+A";
+    el_.classList.remove("ready");
+  }
 }
 
 async function connectToTrimble() {
   try {
     if (!window.TrimbleConnectWorkspace) {
-      el("connectionStatus").textContent = "Workspace API script not loaded.";
+      setConnectionBanner("Couldn't load the Trimble connection. Try refreshing the page.", "error");
       log("TrimbleConnectWorkspace object missing.");
       return;
     }
@@ -110,10 +136,21 @@ async function connectToTrimble() {
           setDrawingNo(decodeURIComponent(m[1]), "extension.command event");
         }
       }
+
+      if (event === "viewer.onSelectionChanged") {
+        updateSelectionCount(data);
+      }
     });
 
-    el("connectionStatus").textContent = "Connected to Trimble Workspace API.";
+    setConnectionBanner("Connected", "ok");
     log("Connected to Workspace API.");
+
+    try {
+      const currentSelection = await API.viewer.getSelection();
+      updateSelectionCount(currentSelection);
+    } catch (selErr) {
+      log("Could not read initial selection", selErr.message);
+    }
 
     try {
       const project = await API.project.getProject();
@@ -124,47 +161,49 @@ async function connectToTrimble() {
       log("Project read failed", projectErr.message);
     }
   } catch (err) {
-    el("connectionStatus").textContent = "Connection failed: " + err.message;
+    setConnectionBanner("Couldn't connect to Trimble Connect. Try refreshing the page.", "error");
     log("Workspace API connection failed", err.message);
   }
 }
 
-function setupManualButton() {
-  el("manualButton").addEventListener("click", () => {
-    const value = el("manualDrawingNo").value.trim();
-    setDrawingNo(value, "manual input");
-    log("Manual drawingNo set", value);
-  });
+function setConnectionBanner(text, kind) {
+  const banner = el("connectionBanner");
+  if (!banner) return;
+  banner.textContent = text;
+  banner.className = "banner " + (kind === "ok" ? "ok" : kind === "error" ? "error" : "muted");
+  if (kind === "ok") {
+    // Fade the "Connected" confirmation out after a moment so it doesn't
+    // permanently take up space once things are working normally.
+    setTimeout(() => {
+      if (banner.textContent === "Connected") banner.classList.add("fade");
+    }, 2000);
+  }
 }
 
 function normalizeValue(v) {
   return String(v === undefined || v === null ? "" : v).trim().toLowerCase();
 }
 
-// Pulls the full list of objectRuntimeIds for every loaded model.
-// Tries three strategies in order, since getObjects() with no ids specified
-// does not reliably return "everything" on all projects:
-//   1) getObjects() with no selector
-//   2) getHierarchyChildren() walked from the model root
-//   3) fall back to whatever is currently selected in the viewer
-//      (the user can press Ctrl+A / "Select all" in the 3D Viewer first)
+// Pulls the full list of objectRuntimeIds for every loaded model, so every
+// property on every object can be checked. Tries a few strategies since
+// Trimble's API doesn't have one reliable "give me everything" call on all
+// projects:
 async function getAllModelObjectIds() {
-  // Strategy 1: unfiltered getObjects()
+  // Attempt 1: unfiltered getObjects()
   try {
     const objs = await API.viewer.getObjects();
     if (objs && objs.length && objs.some(o => (o.objectRuntimeIds || []).length)) {
       const result = objs.map(o => ({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] }));
-      log("Objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+      log("Fallback: objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
       return result;
     }
   } catch (err) {
-    log("getObjects() with no selector failed", err.message);
+    log("Fallback: getObjects() with no selector failed", err.message);
   }
 
   const models = await API.viewer.getModels();
-  log("Loaded models", models.map(m => ({ id: m.id, name: m.name })));
 
-  // Strategy 2: walk the hierarchy from the model root.
+  // Attempt 2: walk the hierarchy from the model root.
   const result = [];
   for (const m of models) {
     try {
@@ -172,32 +211,26 @@ async function getAllModelObjectIds() {
       const ids = (rootChildren || []).map(e => e.id).filter(id => id !== undefined && id !== null);
       if (ids.length) {
         result.push({ modelId: m.id, objectRuntimeIds: ids });
-        log(`Got ${ids.length} object(s) for model ${m.id} via getHierarchyChildren`);
-      } else {
-        log(`getHierarchyChildren returned no objects for model ${m.id}`);
+        log(`Fallback: got ${ids.length} object(s) for model ${m.id} via getHierarchyChildren`);
       }
     } catch (err) {
-      log(`getHierarchyChildren failed for model ${m.id}`, err.message);
+      log(`Fallback: getHierarchyChildren failed for model ${m.id}`, err.message);
     }
   }
   if (result.length) return result;
 
-  // Strategy 3: use whatever is currently selected in the viewer. This is
-  // the most reliable option when the two automatic methods above don't
-  // work on a given project - select everything you want searched in the
-  // 3D Viewer (Ctrl+A selects all visible objects), then click Find & Zoom.
+  // Attempt 3: whatever is currently selected in the viewer.
   try {
     const selection = await API.viewer.getSelection();
     if (selection && selection.length && selection.some(s => (s.objectRuntimeIds || []).length)) {
       const fromSelection = selection.map(s => ({ modelId: s.modelId, objectRuntimeIds: s.objectRuntimeIds || [] }));
-      log("Falling back to current viewer selection as the search scope", fromSelection.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+      log("Fallback: using current viewer selection as the search scope", fromSelection.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
       return fromSelection;
     }
   } catch (err) {
-    log("Reading current selection failed", err.message);
+    log("Fallback: reading current selection failed", err.message);
   }
 
-  log("Could not automatically enumerate any objects. Select the objects you want searched in the 3D Viewer (Ctrl+A for all), then try Find & Zoom again.");
   return [];
 }
 
@@ -239,43 +272,48 @@ async function searchModelForValue(modelId, objectRuntimeIds, targetValue, batch
   return { matchedIds, matchDetails };
 }
 
-async function findAndZoomToDrawing() {
+function setSearchLoading(isLoading) {
+  const btn = el("findZoomButton");
+  if (!btn) return;
+  btn.disabled = isLoading;
+  btn.querySelector(".btn-label").textContent = isLoading ? "Searching..." : "Find & Zoom";
+  const spinner = btn.querySelector(".btn-spinner");
+  if (spinner) spinner.hidden = !isLoading;
+}
+
+function setResult(message, kind) {
   const status = el("zoomStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.className = "result " + (kind || "");
+}
 
+async function findAndZoomToDrawing() {
   if (!API) {
-    status.textContent = "Not connected to Trimble Workspace API yet. Wait for connection, then try again.";
+    setResult("Still connecting to Trimble Connect \u2014 try again in a moment.", "error");
     return;
   }
 
-  const manualTarget = el("zoomTargetInput").value.trim();
-  const detected = (state.drawingNo || "").trim();
-  const target = manualTarget || detected;
-
+  const target = el("zoomTargetInput").value.trim();
   if (!target) {
-    status.textContent = "No value to search for. Enter one in the box above, or make sure a drawingNo was detected higher up.";
+    setResult("Type something to search for first.", "error");
     return;
   }
 
-  status.textContent = `Searching loaded model(s) for "${target}"...`;
-  log("Starting object search", { target });
-
-  let modelObjectSets;
-  try {
-    modelObjectSets = await getAllModelObjectIds();
-  } catch (err) {
-    status.textContent = "Failed to read models from the viewer: " + err.message;
-    log("getModels/getObjects failed", err.message);
-    return;
-  }
-
-  if (!modelObjectSets.length) {
-    status.textContent = "Could not automatically read any objects from the model. In the 3D Viewer, press Ctrl+A to select all objects (or select the area you want searched), then click Find & Zoom again.";
-    return;
-  }
+  setSearchLoading(true);
+  setResult("");
+  log("Starting open search (any property, any object)", { target });
 
   const allMatches = [];
-  let totalChecked = 0;
 
+  const modelObjectSets = await getAllModelObjectIds();
+  if (!modelObjectSets.length) {
+    setSearchLoading(false);
+    setResult(`Couldn't find "${target}" \u2014 couldn't read any objects from the model. Try selecting the part(s) in the 3D Viewer first, then search again.`, "error");
+    return;
+  }
+
+  let totalChecked = 0;
   for (const { modelId, objectRuntimeIds } of modelObjectSets) {
     totalChecked += objectRuntimeIds.length;
     const { matchedIds, matchDetails } = await searchModelForValue(modelId, objectRuntimeIds, target);
@@ -284,40 +322,44 @@ async function findAndZoomToDrawing() {
       log(`Found ${matchedIds.length} matching object(s) in model ${modelId}`, matchDetails);
     }
   }
-
   log(`Search finished. Checked ${totalChecked} object(s) across ${modelObjectSets.length} model(s).`);
 
+  setSearchLoading(false);
+
   if (!allMatches.length) {
-    status.textContent = `No object found with a property value matching "${target}". Click "Inspect current selection" on a known object in the model to see its actual property names/values, then we can tune the match.`;
+    setResult(`\u274c Couldn't find anything matching "${target}". Double-check the value and try again.`, "error");
     return;
   }
 
+  const totalObjects = allMatches.reduce((sum, m) => sum + m.objectRuntimeIds.length, 0);
   const selector = { modelObjectIds: allMatches };
 
   try {
     await API.viewer.setSelection(selector, "set");
     await API.viewer.setCamera(selector, { animationTime: 800 });
-    const totalObjects = allMatches.reduce((sum, m) => sum + m.objectRuntimeIds.length, 0);
-    status.textContent = `Selected and zoomed to ${totalObjects} object(s) matching "${target}".`;
-    log("Selection + zoom applied", selector);
+
+    if (totalObjects > 1) {
+      setResult(`\u26a0\ufe0f Found ${totalObjects} parts matching "${target}" \u2014 they're not unique, so all ${totalObjects} are shown together.`, "warn");
+    } else {
+      setResult(`\u2705 Found it \u2014 zoomed to "${target}".`, "ok");
+    }
+    log("Selection + zoom applied", { selector, totalObjects });
   } catch (err) {
-    status.textContent = "Match found but select/zoom failed: " + err.message;
+    setResult("Found a match, but couldn't select/zoom to it. Try again.", "error");
     log("setSelection/setCamera failed", err.message);
   }
 }
 
 async function inspectSelection() {
-  const status = el("zoomStatus");
-
   if (!API) {
-    status.textContent = "Not connected to Trimble Workspace API yet.";
+    setResult("Still connecting to Trimble Connect \u2014 try again in a moment.", "error");
     return;
   }
 
   try {
     const selection = await API.viewer.getSelection();
     if (!selection || !selection.length) {
-      status.textContent = "Nothing is selected in the 3D Viewer. Click a part in the model first, then press Inspect.";
+      setResult("Nothing is selected in the 3D Viewer. Click a part in the model first, then try this again.", "error");
       return;
     }
 
@@ -328,9 +370,9 @@ async function inspectSelection() {
       log(`Properties for selected object(s) in model ${sel.modelId}`, props);
     }
 
-    status.textContent = "Properties of the currently selected object(s) were printed to the debug log below \u2014 look there for the property name/value that matches your drawing number.";
+    setResult("Properties printed to the debug log below \u2014 look for the field name/value you want to search by.", "ok");
   } catch (err) {
-    status.textContent = "Inspect failed: " + err.message;
+    setResult("Couldn't read the selected part's properties.", "error");
     log("Inspect selection failed", err.message);
   }
 }
@@ -342,10 +384,9 @@ function setupZoomButtons() {
 
 (async function main() {
   el("debugLog").textContent = "Starting 4EST Drawing Locator MVP 1...";
-  setupManualButton();
   setupZoomButtons();
   detectDrawingNo();
   await connectToTrimble();
 
-  log("MVP 1 ready. Use 'Find & Zoom' to select/zoom to the matching part, or 'Inspect current selection' to see property names.");
+  log("MVP 1 ready.");
 })();
