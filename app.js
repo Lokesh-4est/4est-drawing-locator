@@ -189,133 +189,42 @@ function normalizeValue(v) {
 // Trimble's API doesn't have one reliable "give me everything" call on all
 // projects:
 async function getAllModelObjectIds() {
-  /*
-    DIRECT SEARCH V2
-
-    Reason for this update:
-    In your debug log, unfiltered viewer.getObjects() returned only 5 IDs across 5 models.
-    That means it was returning only model root/container IDs, not real leaf part IDs.
-    We now reject that small root-only result and try hierarchy expansion first.
-
-    If hierarchy expansion is blocked by Trimble API, the function still falls back
-    to current selection, so the old area-selection method remains available as backup.
-  */
-
-  const models = await getLoadedModelsSafe();
-
-  // Attempt 1: viewer.getObjects() probe.
-  // Accept it only if it returns a useful number of object ids.
+  // Attempt 1: unfiltered getObjects()
   try {
     const objs = await API.viewer.getObjects();
-    const normalized = normalizeModelObjectSets(objs);
-    const total = normalized.reduce((sum, r) => sum + r.objectRuntimeIds.length, 0);
-
-    log("Search scope probe: unfiltered getObjects()", normalized.map(r => ({
-      modelId: r.modelId,
-      count: r.objectRuntimeIds.length
-    })));
-
-    if (total > 25 || normalized.some(o => o.objectRuntimeIds.length > 25)) {
-      log("Search scope accepted: getObjects() returned enough object ids.", normalized.map(r => ({
-        modelId: r.modelId,
-        count: r.objectRuntimeIds.length
-      })));
-      return normalized;
+    if (objs && objs.length && objs.some(o => (o.objectRuntimeIds || []).length)) {
+      const result = objs.map(o => ({ modelId: o.modelId, objectRuntimeIds: o.objectRuntimeIds || [] }));
+      log("Fallback: objects retrieved via unfiltered getObjects()", result.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
+      return result;
     }
-
-    log("Search scope rejected: getObjects() returned only root/container ids, trying hierarchy expansion.");
   } catch (err) {
-    log("Search scope probe failed: getObjects()", err.message);
+    log("Fallback: getObjects() with no selector failed", err.message);
   }
 
-  // Attempt 2: recursively collect hierarchy object ids from each loaded model.
-  const hierarchyResults = [];
+  const models = await API.viewer.getModels();
 
-  for (const model of models) {
-    const modelId = getModelId(model);
-    if (!modelId) continue;
-
-    const ids = await collectHierarchyObjectIds(modelId);
-
-    if (ids.length) {
-      hierarchyResults.push({ modelId, objectRuntimeIds: uniqueIds(ids) });
-      log(`Search scope probe: hierarchy collected ${ids.length} id(s) for model ${modelId}`);
-    }
-  }
-
-  const hierarchyTotal = hierarchyResults.reduce((sum, r) => sum + r.objectRuntimeIds.length, 0);
-
-  if (hierarchyTotal > 25) {
-    log("Search scope accepted: hierarchy expansion.", hierarchyResults.map(r => ({
-      modelId: r.modelId,
-      count: r.objectRuntimeIds.length
-    })));
-    return hierarchyResults;
-  }
-
-  if (hierarchyTotal > 0) {
-    log("Search scope rejected: hierarchy returned too few ids, trying selector variants.", hierarchyResults.map(r => ({
-      modelId: r.modelId,
-      count: r.objectRuntimeIds.length
-    })));
-  }
-
-  // Attempt 3: model-specific getObjects selector variants.
-  const selectorResults = [];
-
-  for (const model of models) {
-    const modelId = getModelId(model);
-    if (!modelId) continue;
-
-    const attempts = [
-      { label: "getObjects({modelId})", args: [{ modelId }] },
-      { label: "getObjects(modelId)", args: [modelId] },
-      { label: "getObjects({modelId, recursive:true})", args: [{ modelId, recursive: true }] },
-      { label: "getObjects({modelId, includeChildren:true})", args: [{ modelId, includeChildren: true }] },
-      { label: "getObjects({modelObjectIds:[{modelId}]})", args: [{ modelObjectIds: [{ modelId }] }] }
-    ];
-
-    for (const attempt of attempts) {
-      try {
-        const objs = await API.viewer.getObjects(...attempt.args);
-        const normalized = normalizeModelObjectSets(objs);
-        const idsForModel = normalized
-          .filter(x => String(x.modelId) === String(modelId))
-          .flatMap(x => x.objectRuntimeIds);
-
-        if (idsForModel.length > 25) {
-          selectorResults.push({
-            modelId,
-            objectRuntimeIds: uniqueIds(idsForModel)
-          });
-
-          log(`Search scope accepted: ${idsForModel.length} id(s) for model ${modelId} via ${attempt.label}`);
-          break;
-        }
-
-        if (idsForModel.length) {
-          log(`Search scope rejected: ${attempt.label} for model ${modelId} returned only ${idsForModel.length} id(s).`);
-        }
-      } catch (err) {
-        log(`Search scope attempt failed: ${attempt.label} for model ${modelId}`, err.message);
+  // Attempt 2: walk the hierarchy from the model root.
+  const result = [];
+  for (const m of models) {
+    try {
+      const rootChildren = await API.viewer.getHierarchyChildren(m.id, [], undefined, true);
+      const ids = (rootChildren || []).map(e => e.id).filter(id => id !== undefined && id !== null);
+      if (ids.length) {
+        result.push({ modelId: m.id, objectRuntimeIds: ids });
+        log(`Fallback: got ${ids.length} object(s) for model ${m.id} via getHierarchyChildren`);
       }
+    } catch (err) {
+      log(`Fallback: getHierarchyChildren failed for model ${m.id}`, err.message);
     }
   }
+  if (result.length) return result;
 
-  if (selectorResults.length) {
-    return selectorResults;
-  }
-
-  // Final fallback: selected/area-selected objects.
+  // Attempt 3: whatever is currently selected in the viewer.
   try {
     const selection = await API.viewer.getSelection();
-    const fromSelection = normalizeModelObjectSets(selection);
-
-    if (fromSelection.length && fromSelection.some(s => (s.objectRuntimeIds || []).length)) {
-      log("Search scope fallback: using current viewer selection", fromSelection.map(r => ({
-        modelId: r.modelId,
-        count: r.objectRuntimeIds.length
-      })));
+    if (selection && selection.length && selection.some(s => (s.objectRuntimeIds || []).length)) {
+      const fromSelection = selection.map(s => ({ modelId: s.modelId, objectRuntimeIds: s.objectRuntimeIds || [] }));
+      log("Fallback: using current viewer selection as the search scope", fromSelection.map(r => ({ modelId: r.modelId, count: r.objectRuntimeIds.length })));
       return fromSelection;
     }
   } catch (err) {
@@ -323,139 +232,6 @@ async function getAllModelObjectIds() {
   }
 
   return [];
-}
-
-async function getLoadedModelsSafe() {
-  try {
-    if (!API.viewer.getModels) return [];
-    const models = await API.viewer.getModels();
-    log("Loaded models detected for direct search", (models || []).map(m => ({
-      id: getModelId(m),
-      name: m.name || m.modelName || m.fileName || ""
-    })));
-    return models || [];
-  } catch (err) {
-    log("Could not read loaded models", err.message);
-    return [];
-  }
-}
-
-function getModelId(model) {
-  if (!model) return "";
-  return model.id || model.modelId || model.modelRuntimeId || model.runtimeId || "";
-}
-
-function uniqueIds(ids) {
-  const seen = new Set();
-  const output = [];
-
-  for (const id of ids || []) {
-    const key = String(id);
-    if (!seen.has(key)) {
-      seen.add(key);
-      output.push(id);
-    }
-  }
-
-  return output;
-}
-
-function normalizeModelObjectSets(sets) {
-  const map = new Map();
-
-  for (const set of sets || []) {
-    if (!set) continue;
-
-    const modelId = set.modelId || set.id || set.model || "";
-    const ids = set.objectRuntimeIds || set.objects || set.children || [];
-
-    if (!modelId || !Array.isArray(ids) || !ids.length) continue;
-
-    if (!map.has(modelId)) map.set(modelId, []);
-    map.get(modelId).push(...ids);
-  }
-
-  return Array.from(map.entries()).map(([modelId, ids]) => ({
-    modelId,
-    objectRuntimeIds: uniqueIds(ids)
-  }));
-}
-
-async function collectHierarchyObjectIds(modelId) {
-  const collected = [];
-  const visited = new Set();
-  const maxDepth = 20;
-  const maxIds = 50000;
-
-  function getNodeId(node) {
-    if (!node) return null;
-    return node.id ?? node.objectRuntimeId ?? node.runtimeId ?? node.objectId ?? null;
-  }
-
-  async function getChildren(parentIds) {
-    const attempts = [
-      { label: "getHierarchyChildren(modelId, parentIds, undefined, true)", args: [modelId, parentIds, undefined, true] },
-      { label: "getHierarchyChildren(modelId, parentIds)", args: [modelId, parentIds] },
-      { label: "getHierarchyChildren({modelId, objectRuntimeIds})", args: [{ modelId, objectRuntimeIds: parentIds }] },
-      { label: "getHierarchyChildren({modelId, parentIds})", args: [{ modelId, parentIds }] }
-    ];
-
-    for (const attempt of attempts) {
-      try {
-        if (!API.viewer.getHierarchyChildren) continue;
-        const children = await API.viewer.getHierarchyChildren(...attempt.args);
-
-        if (Array.isArray(children)) {
-          return children;
-        }
-      } catch (err) {
-        // Try next signature.
-      }
-    }
-
-    return [];
-  }
-
-  const roots = await getChildren([]);
-
-  log(`Hierarchy root probe for model ${modelId}`, {
-    rootCount: roots.length,
-    sample: roots.slice(0, 5)
-  });
-
-  const queue = [];
-
-  for (const root of roots) {
-    const id = getNodeId(root);
-    if (id === null || id === undefined) continue;
-    queue.push({ id, depth: 0 });
-  }
-
-  while (queue.length && collected.length < maxIds) {
-    const item = queue.shift();
-    const key = String(item.id);
-
-    if (visited.has(key)) continue;
-    visited.add(key);
-
-    collected.push(item.id);
-
-    if (item.depth >= maxDepth) continue;
-
-    const children = await getChildren([item.id]);
-    for (const child of children || []) {
-      const childId = getNodeId(child);
-      if (childId === null || childId === undefined) continue;
-      queue.push({ id: childId, depth: item.depth + 1 });
-    }
-  }
-
-  log(`Hierarchy collection finished for model ${modelId}`, {
-    collected: collected.length,
-    visited: visited.size
-  });
-
-  return uniqueIds(collected);
 }
 
 // Fetches object properties in batches and returns objectRuntimeIds whose
@@ -551,7 +327,7 @@ async function findAndZoomToDrawing() {
   setSearchLoading(false);
 
   if (!allMatches.length) {
-    setResult(`❌ Couldn\'t find anything matching "${target}". If debug shows only a few objects checked, Trimble is exposing only root containers and area selection is still needed as fallback.`, "error");
+    setResult(`\u274c Couldn't find anything matching "${target}". Double-check the value and try again.`, "error");
     return;
   }
 
